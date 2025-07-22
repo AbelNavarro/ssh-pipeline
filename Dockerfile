@@ -1,8 +1,8 @@
-FROM python:3.8.3-slim-buster
+FROM python:3.13.5-slim
 
 LABEL "maintainer"="Scott Ng <thuongnht@gmail.com>"
 LABEL "repository"="https://github.com/cross-the-world/ssh-pipeline"
-LABEL "version"="v1.1.0"
+LABEL "version"="v1.3.0"
 
 LABEL "com.github.actions.name"="ssh-pipeline"
 LABEL "com.github.actions.description"="Pipeline: ssh"
