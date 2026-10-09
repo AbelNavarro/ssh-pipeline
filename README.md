@@ -5,6 +5,16 @@
 This action allows doing in order
 * ssh if defined
 
+## Image
+
+The action runs a prebuilt image, `ghcr.io/abelnavarro/ssh-pipeline`, so a
+run doesn't build the Dockerfile or pull anything from Docker Hub.
+[`image.yml`](./.github/workflows/image.yml) publishes it when the image's
+files change, and every Monday checks whether the base image
+(`python:3.13-slim`, through `mirror.gcr.io`) has changed. If it has, it
+rebuilds, tests (including a password ssh login against a local sshd) and
+publishes, then commits the new digest to `action.yml`.
+
 ## Inputs
 see the [action.yml](./action.yml) file for more detail imformation.
 
@@ -38,8 +48,6 @@ see the [action.yml](./action.yml) file for more detail imformation.
 
 
 ## Usages
-see the [deploy.yml](./.github/workflows/deploy.yml) file for more detail imformation.
-
 ```yaml
 - name: ssh pipelines
   uses: cross-the-world/ssh-pipeline@master

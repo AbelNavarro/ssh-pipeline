@@ -1,4 +1,8 @@
-FROM python:3.13.5-slim
+# The published image (.github/workflows/image.yml) is built FROM the base
+# pinned by digest; the default is for local builds. mirror.gcr.io serves
+# Docker Hub's official images without Docker Hub's anonymous pull limit.
+ARG BASE_IMAGE=mirror.gcr.io/library/python:3.13-slim
+FROM ${BASE_IMAGE}
 
 LABEL "maintainer"="Scott Ng <thuongnht@gmail.com>"
 LABEL "repository"="https://github.com/cross-the-world/ssh-pipeline"

@@ -1,0 +1,140 @@
+name: image
+
+# Publishes the action's image to GHCR, so workflows that use the action pull
+# a ready image instead of building the Dockerfile on every run (that build
+# pulled the base from Docker Hub, which rate-limits GitHub's runners).
+#
+# Once a week it checks whether the base image (linux/amd64) has changed. If
+# it has, it rebuilds, tests and publishes the image and, once action.yml
+# pins an image by digest, commits the new digest to action.yml. A pull
+# request only builds and tests.
+on:
+  schedule:
+    - cron: '23 5 * * 1'  # Mondays 05:23 UTC
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - Dockerfile
+      - app.py
+      - entrypoint.sh
+      - requirements.txt
+      - .github/workflows/image.yml
+  pull_request:
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: image
+
+env:
+  BASE: mirror.gcr.io/library/python:3.13-slim
+  IMAGE: ghcr.io/abelnavarro/ssh-pipeline
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the base image
+        id: check
+        run: |
+          base_digest=$(docker buildx imagetools inspect --raw "$BASE" | jq -r '
+            .manifests[]
+            | select(.platform.os == "linux" and .platform.architecture == "amd64")
+            | .digest')
+          test -n "$base_digest"
+          echo "base_digest=$base_digest" >> "$GITHUB_OUTPUT"
+
+          # The image action.yml pins, or :latest while it pins none.
+          current=$(sed -n "s|^ *image: *'docker://\($IMAGE@sha256:[0-9a-f]*\)'.*|\1|p" action.yml)
+          current=${current:-$IMAGE:latest}
+          current_base=
+          if docker pull -q "$current" > /dev/null; then
+            current_base=$(docker image inspect --format '{{index .Config.Labels "base.digest"}}' "$current")
+          fi
+          echo "$current was built from ${current_base:-unknown}, the base is now $base_digest"
+
+          if [ "$GITHUB_EVENT_NAME" = schedule ] && [ "$current_base" = "$base_digest" ]; then
+            echo "No new base image."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        if: steps.check.outputs.build == 'true'
+        env:
+          BASE_DIGEST: ${{ steps.check.outputs.base_digest }}
+        run: |
+          docker build --pull --provenance=false \
+            --build-arg BASE_IMAGE="$BASE@$BASE_DIGEST" \
+            --label base.digest="$BASE_DIGEST" \
+            --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            -t ssh-pipeline:test .
+
+      - name: Test
+        if: steps.check.outputs.build == 'true'
+        run: |
+          docker run --rm --entrypoint sh ssh-pipeline:test -c \
+            'python3 -c "import paramiko; print(\"paramiko\", paramiko.__version__)" && ssh -V'
+
+          # Without inputs the action says so and exits 0.
+          docker run --rm ssh-pipeline:test | tee out.txt
+          grep -q 'SSH invalid' out.txt
+
+          # A password login and a script, as t0rrenta's deploy uses it,
+          # against an sshd on the runner.
+          if ! [ -x /usr/sbin/sshd ]; then
+            sudo apt-get update -q && sudo apt-get install -yq openssh-server
+          fi
+          sudo ssh-keygen -A
+          sudo mkdir -p /run/sshd
+          sudo useradd -m pipeline-test
+          password=$(openssl rand -hex 16)
+          echo "pipeline-test:$password" | sudo chpasswd
+          sudo /usr/sbin/sshd -p 2222 -o PasswordAuthentication=yes -o UsePAM=yes
+          docker run --rm --network host \
+            -e INPUT_HOST=127.0.0.1 -e INPUT_PORT=2222 -e INPUT_USER=pipeline-test \
+            -e INPUT_PASS="$password" -e INPUT_CONNECT_TIMEOUT=10s \
+            -e INPUT_SCRIPT="$(printf 'cd /tmp\necho ssh-ok-$((6*7))\n')" \
+            ssh-pipeline:test | tee out.txt
+          grep -q 'ssh-ok-42' out.txt
+
+      - name: Publish
+        id: publish
+        if: steps.check.outputs.build == 'true' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          tag=$(date -u +%Y%m%d)-${GITHUB_SHA::7}
+          for t in "$tag" latest; do
+            docker tag ssh-pipeline:test "$IMAGE:$t"
+            docker push -q "$IMAGE:$t"
+          done
+          digest=$(docker buildx imagetools inspect "$IMAGE:$tag" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "Published $IMAGE:$tag ($digest)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Point action.yml at the new image
+        if: steps.publish.outcome == 'success'
+        env:
+          TAG: ${{ steps.publish.outputs.tag }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          BASE_DIGEST: ${{ steps.check.outputs.base_digest }}
+        run: |
+          sed -i "s|^\( *image: *'docker://$IMAGE@\)sha256:[0-9a-f]*'|\1$DIGEST'|" action.yml
+          if git diff --quiet action.yml; then
+            echo "action.yml pins no image, or already pins this one."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898276+github-actions[bot]@users.noreply.github.com'
+          git commit -m "Use image $TAG" -m "Built from $BASE@$BASE_DIGEST." action.yml
+          git push
