@@ -8,10 +8,22 @@ name: image
 # it has, it rebuilds, tests and publishes the image and, once action.yml
 # pins an image by digest, commits the new digest to action.yml. A pull
 # request only builds and tests.
+#
+# GitHub disables a public repo's schedules after 60 days without activity,
+# and this repo only gets commits when the base image changes. So when the
+# last commit is older than keepalive_days, a run commits keepalive.txt.
 on:
   schedule:
     - cron: '23 5 * * 1'  # Mondays 05:23 UTC
   workflow_dispatch:
+    inputs:
+      rebuild:
+        description: Rebuild even if the base image hasn't changed
+        type: boolean
+        default: true
+      keepalive_days:
+        description: Commit keepalive.txt if the last commit is older than this
+        default: '45'
   push:
     branches: [master]
     paths:
@@ -58,7 +70,9 @@ jobs:
           fi
           echo "$current was built from ${current_base:-unknown}, the base is now $base_digest"
 
-          if [ "$GITHUB_EVENT_NAME" = schedule ] && [ "$current_base" = "$base_digest" ]; then
+          # A push or pull request always builds; a manual run unless told not to.
+          rebuild=${{ github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.rebuild) }}
+          if [ "$rebuild" = false ] && [ "$current_base" = "$base_digest" ]; then
             echo "No new base image."
             echo "build=false" >> "$GITHUB_OUTPUT"
           else
@@ -137,4 +151,23 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898276+github-actions[bot]@users.noreply.github.com'
           git commit -m "Use image $TAG" -m "Built from $BASE@$BASE_DIGEST." action.yml
+          git push
+
+      - name: Keep the schedule alive
+        if: github.event_name != 'pull_request'
+        env:
+          MAX_AGE_DAYS: ${{ inputs.keepalive_days || '45' }}
+        run: |
+          # HEAD includes the digest commit above, if there was one.
+          age=$(( ($(date +%s) - $(git log -1 --format=%ct)) / 86400 ))
+          if [ "$age" -lt "$MAX_AGE_DAYS" ]; then
+            echo "The last commit is $age days old, no keepalive needed."
+            exit 0
+          fi
+          date -u +%Y-%m-%d > keepalive.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898276+github-actions[bot]@users.noreply.github.com'
+          git add keepalive.txt
+          git commit -m "Keep the weekly schedule alive" \
+            -m "The last commit was $age days old; GitHub disables schedules after 60 days without activity."
           git push
