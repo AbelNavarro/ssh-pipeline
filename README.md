@@ -15,6 +15,11 @@ files change, and every Monday checks whether the base image
 rebuilds, tests (including a password ssh login against a local sshd) and
 publishes, then commits the new digest to `action.yml`.
 
+GitHub disables a public repo's schedules after 60 days without activity, so
+when the last commit is older than 45 days a run also commits the date to
+`keepalive.txt`. A manual run can skip the rebuild (`rebuild: false`) and
+lower that age (`keepalive_days`).
+
 ## Inputs
 see the [action.yml](./action.yml) file for more detail imformation.
 
