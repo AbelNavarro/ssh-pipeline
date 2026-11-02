@@ -26,7 +26,7 @@ inputs:
     required: false
 runs:
   using: 'docker'
-  image: 'docker://ghcr.io/abelnavarro/ssh-pipeline@sha256:9b929bfdb5df3f957bad17b169cf0dfe90f9981de747256993e8a162c8048fee'
+  image: 'docker://ghcr.io/abelnavarro/ssh-pipeline@sha256:10fdb42a47cdab99498470700003d86f0619e0336da83e706e8f9194d29e9a44'
 branding:
   icon: 'terminal'
   color: 'gray-dark'
